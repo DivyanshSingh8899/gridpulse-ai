@@ -9,12 +9,10 @@ import {
   Leaf,
   ScanSearch,
   ShieldCheck,
-  Sparkles,
   TrendingDown,
   Zap,
 } from "lucide-react";
 import { Link } from "react-router";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
 const fadeUp = {
@@ -121,22 +119,12 @@ export default function Landing() {
 
       {/* Hero */}
       <section className="relative z-10 mx-auto flex max-w-4xl flex-col items-center px-6 pt-20 pb-16 text-center md:pt-28">
-        <motion.div initial="hidden" animate="visible" custom={0} variants={fadeUp}>
-          <Badge
-            variant="outline"
-            className="glass-subtle gap-2 rounded-full border-transparent px-4 py-1.5 text-xs font-medium tracking-wide text-muted-foreground"
-          >
-            <Sparkles className="size-3.5 text-primary" />
-            Hackathon Track 03 — Waste &amp; Energy
-          </Badge>
-        </motion.div>
-
         <motion.h1
           initial="hidden"
           animate="visible"
           custom={1}
           variants={fadeUp}
-          className="mt-6 font-display text-5xl font-bold leading-[1.05] tracking-tight md:text-7xl"
+          className="font-display text-5xl font-bold leading-[1.05] tracking-tight md:text-7xl"
         >
           One platform for
           <br />
