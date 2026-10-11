@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
   BatteryCharging,
@@ -42,6 +42,8 @@ import {
 } from "@/components/dashboard-charts";
 import { useAuth } from "@/hooks/use-auth";
 import { useMicrogrid } from "@/hooks/use-microgrid";
+import { useBackendTelemetry } from "@/hooks/use-backend-telemetry";
+import { checkBackend, askCopilot, exportAuditCsv, inspectImage } from "@/lib/api-client";
 import { ACTION_STYLES, type InspectionResult, analyzeImage } from "@/lib/e-waste";
 import {
   type ChatMessage,
@@ -70,7 +72,21 @@ type Scan = {
 export default function Dashboard() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
-  const { history, latest, alerts, paused, setPaused } = useMicrogrid();
+  const local = useMicrogrid();
+  const backend = useBackendTelemetry();
+  const [backendInfo, setBackendInfo] = useState<Awaited<ReturnType<typeof checkBackend>> | null>(null);
+
+  // Prefer the backend SSE stream when connected; otherwise the local simulator.
+  const dataSource = backend.status === "live" ? backend : null;
+  const history = dataSource ? dataSource.points : local.history;
+  const latest = dataSource ? dataSource.latest : local.latest;
+  const alerts = dataSource ? dataSource.alerts : local.alerts;
+  const pause = dataSource ? null : local.setPaused;
+  const paused = dataSource ? false : local.paused;
+  const setPaused = (v: boolean) => { if (pause) pause(v); };
+  useEffect(() => {
+    void checkBackend().then(setBackendInfo);
+  }, []);
 
   const [scans, setScans] = useState<Scan[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -110,8 +126,28 @@ export default function Dashboard() {
     setCurrentResult(null);
     setCurrentPreview(URL.createObjectURL(file));
     try {
-      const result = await analyzeImage(file, { source: "upload" });
-      await new Promise(r => setTimeout(r, 1400)); // emulated inference latency
+      const res = await inspectImage(file, {
+        source: "upload",
+        fallback: f => analyzeImage(f, { source: "upload" }),
+      });
+      const engineLive = "engine" in res && res.engine === "rekognition+bedrock";
+      const result: InspectionResult = {
+        assetType: res.assetType as InspectionResult["assetType"],
+        hazardScore: res.hazardScore,
+        degradationPct: res.degradationPct,
+        condition: res.condition as InspectionResult["condition"],
+        action: res.action,
+        actionConfidence: res.actionConfidence,
+        residualValue: res.residualValue,
+        carbonSavingsKg: res.carbonSavingsKg,
+        findings: res.findings,
+        summary: res.summary,
+        hazardLabels: engineLive ? ["AWS Rekognition"] : [],
+        processingMs: res.processingMs,
+        modelId: engineLive
+          ? "rekognition-custom-labels + bedrock claude-3.5-sonnet"
+          : "deterministic-fallback (local)",
+      };
       setCurrentResult(result);
       setScans(prev => [
         {
@@ -138,25 +174,19 @@ export default function Dashboard() {
     };
     setChat(c => [...c, userMsg]);
     setDraft("");
-    window.setTimeout(() => {
-      const reply = answerQuestion(text, stats, latest);
+    window.setTimeout(async () => {
+      const res = await askCopilot(text, { co2OffsetKg: stats.co2OffsetKg, savingsUsd: stats.cumulativeSavings, peakShavedPct: stats.peakShavedPct, assetsRepaired: stats.assetsRepaired, assetsRepurposed: stats.assetsRepurposed, assetsRecycled: stats.assetsRecycled, wasteDivertedKg: stats.wasteDivertedKg }, q => answerQuestion(q, stats, latest));
       setChat(c => [
         ...c,
         {
           id: crypto.randomUUID(),
           role: "assistant",
-          text: reply,
+          text: res.answer,
           ts: Date.now(),
-          topic: /carbon|co2/i.test(text)
-            ? "scope-2 · carbon"
-            : /lithium|battery/i.test(text)
-              ? "compliance · class 9"
-              : /compliance|audit|report/i.test(text)
-                ? "audit · epa"
-                : "facility · telemetry",
+          topic: res.engine === "bedrock-converse" ? "bedrock · claude · live" : res.engine === "structured-fallback" && !res.fallbackText ? "server · structured fallback" : "local · offline fallback",
         },
       ]);
-    }, 650);
+    }, 200);
   }, [draft, stats, latest]);
 
   const handleSignOut = async () => {
@@ -165,11 +195,7 @@ export default function Dashboard() {
   };
 
   const handleExportCsv = () => {
-    const csv = buildAuditCsv(stats, history);
-    downloadCsv(
-      `gridpulse-esg-audit-${new Date().toISOString().slice(0, 10)}.csv`,
-      csv,
-    );
+    void exportAuditCsv(buildAuditCsv(stats, history));
   };
 
   const chartData: ChartPoint[] = useMemo(
@@ -232,6 +258,16 @@ export default function Dashboard() {
                   className={`size-1.5 rounded-full ${paused ? "bg-amber-500" : "animate-pulse bg-emerald-500"}`}
                 />
                 {paused ? "Paused" : "Streaming"}
+              </span>
+            </div>
+            <div className="glass-subtle hidden rounded-lg px-2.5 py-1 lg:block">
+              <span className="flex items-center gap-1.5 text-xs font-medium">
+                <span
+                  className={`size-1.5 rounded-full ${backend.status === "live" ? "bg-sky-500" : "bg-amber-500"}`}
+                />
+                {backend.status === "live"
+                  ? `API · ${backendInfo?.mode === "aws-live" ? "AWS live" : "backend live"}`
+                  : "local sim"}
               </span>
             </div>
             <Button variant="ghost" size="sm" className="gap-2" onClick={handleSignOut}>
